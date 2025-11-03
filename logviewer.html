@@ -11,8 +11,9 @@
         }
 
         #log-container {
-            height: calc(100vh - 24px);
-            padding: 12px;
+            height: calc(100vh);
+            margin: 0;
+            padding: 8px;
             overflow-y: scroll;
         }
 
@@ -20,7 +21,7 @@
             position: fixed;
             bottom: 24px;
             right: 24px;
-            background-color: #007bff;
+            background-color: #0099FF;
             color: #fff;
             border: none;
             cursor: pointer;
@@ -30,8 +31,20 @@
             border-radius: 50%;
         }
 
+        #scroll-to-bottom:hover {
+            background-color: #00CCFF;
+        }
+
         #scroll-to-bottom svg {
             fill: #fff;
+        }
+
+        .done {
+            background-color: #cfc;
+        }
+
+        .error {
+            background-color: #fcc;
         }
     </style>
 </head>
@@ -44,44 +57,20 @@
         </svg>
     </button>
 
+    <script
+        src="https://mirrors.sustech.edu.cn/cdnjs/ajax/libs/reconnecting-websocket/1.0.0/reconnecting-websocket.min.js"
+        type="application/javascript"></script>
+
     <script>
         const logContainer = document.getElementById('log-container');
         const scrollToBottomButton = document.getElementById('scroll-to-bottom');
         let shouldScrollToBottom = true;
-        let logFetchInterval;
 
-        async function getLogContent() {
-            try {
-                const response = await fetch('reinstall.log', {
-                    cache: 'no-store'
-                });
-
-                if (response.ok) {
-                    const logContent = await response.text();
-                    // 修复 wget 换行符为 \r 导致不换行
-                    logContainer.textContent = logContent.replace(/[\r\n]+/g, "\n");;
-
-                    if (shouldScrollToBottom) {
-                        logContainer.scrollTop = logContainer.scrollHeight;
-                    }
-
-                    if (logContent.includes("Error:")) {
-                        clearInterval(logFetchInterval);
-                        alert("Error occurred.");
-                    }
-
-                } else {
-                    console.error('Failed to fetch log file.');
-                }
-
-            } catch (error) {
-                console.error('An error occurred: ' + error.message);
-            }
-
-            finally {
-                logFetchInterval = setTimeout(getLogContent, 2000);
-            }
-        }
+        // 缓冲区相关
+        let messageBuffer = [];
+        let flushScheduled = false;
+        const BUFFER_FLUSH_INTERVAL = 100; // 毫秒
+        const BUFFER_MAX_SIZE = 50; // 最大缓冲消息数
 
         scrollToBottomButton.addEventListener('click', () => {
             logContainer.scrollTop = logContainer.scrollHeight;
@@ -98,7 +87,72 @@
             shouldScrollToBottom = isAtBottom;
         });
 
-        getLogContent();
+        // 刷新缓冲区到 DOM
+        function flushBuffer() {
+            if (messageBuffer.length === 0) {
+                flushScheduled = false;
+                return;
+            }
+
+            // 批量更新文本内容
+            const batchText = messageBuffer.join('\n');
+            logContainer.textContent += '\n' + batchText;
+
+            // 检查状态变化（优先级：error > done > start）
+            if (batchText.includes('***** ERROR *****')) {
+                document.body.className = 'error';
+            } else if (batchText.includes('***** DONE *****')) {
+                document.body.className = 'done';
+            } else if (batchText.includes('***** START TRANS *****')) {
+                document.body.className = '';
+            }
+
+            // 自动滚动
+            if (shouldScrollToBottom) {
+                logContainer.scrollTop = logContainer.scrollHeight;
+            }
+
+            // 清空缓冲区
+            messageBuffer = [];
+            flushScheduled = false;
+        }
+
+        // 调度刷新
+        function scheduleFlush() {
+            if (!flushScheduled) {
+                flushScheduled = true;
+                requestAnimationFrame(() => {
+                    setTimeout(flushBuffer, BUFFER_FLUSH_INTERVAL);
+                });
+            }
+        }
+
+        // 添加消息到缓冲区
+        function bufferMessage(message) {
+            messageBuffer.push(message);
+
+            // 如果缓冲区满了，立即刷新
+            if (messageBuffer.length >= BUFFER_MAX_SIZE) {
+                if (flushScheduled) {
+                    // 取消之前的调度，立即刷新
+                    flushScheduled = false;
+                }
+                flushBuffer();
+            } else {
+                scheduleFlush();
+            }
+        }
+
+        var ws = new ReconnectingWebSocket('ws://' + location.host + '/');
+        ws.onopen = function () {
+            bufferMessage('WebSocket Connected.');
+        };
+        ws.onclose = function () {
+            bufferMessage('WebSocket Disconnected.');
+        };
+        ws.onmessage = function (event) {
+            bufferMessage(event.data);
+        };
     </script>
 </body>
 
